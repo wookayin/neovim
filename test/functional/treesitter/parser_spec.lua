@@ -8,6 +8,7 @@ local exec_lua = helpers.exec_lua
 local pcall_err = helpers.pcall_err
 local feed = helpers.feed
 local is_os = helpers.is_os
+local api = helpers.api
 
 describe('treesitter parser API', function()
   before_each(function()
@@ -171,7 +172,7 @@ void ui_refresh(void)
     assert(res_fail)
   end)
 
-  local query = [[
+  local test_query = [[
     ((call_expression function: (identifier) @minfunc (argument_list (identifier) @min_id)) (eq? @minfunc "MIN"))
     "for" @keyword
     (primitive_type) @type
@@ -187,7 +188,7 @@ void ui_refresh(void)
   end)
 
   it('supports caching queries', function()
-    local long_query = query:rep(100)
+    local long_query = test_query:rep(100)
     local function q(n)
       return exec_lua(
         [[
@@ -230,7 +231,7 @@ void ui_refresh(void)
       end
       return res
     ]],
-      query
+      test_query
     )
 
     eq({
@@ -259,14 +260,16 @@ void ui_refresh(void)
       for pattern, match in cquery:iter_matches(tree:root(), 0, 7, 14) do
         -- can't transmit node over RPC. just check the name and range
         local mrepr = {}
-        for cid,node in pairs(match) do
-          table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+        for cid, nodes in pairs(match) do
+          for _, node in ipairs(nodes) do
+            table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+          end
         end
         table.insert(res, {pattern, mrepr})
       end
       return res
     ]],
-      query
+      test_query
     )
 
     eq({
@@ -284,6 +287,67 @@ void ui_refresh(void)
         { { 'minfunc', 'identifier', 12, 13, 12, 16 }, { 'min_id', 'identifier', 12, 29, 12, 35 } },
       },
       { 4, { { 'fieldarg', 'identifier', 13, 14, 13, 16 } } },
+    }, res)
+  end)
+
+  it('support query and iter by capture for quantifiers', function()
+    insert(test_text)
+
+    local res = exec_lua(
+      [[
+      cquery = vim.treesitter.query.parse("c", ...)
+      parser = vim.treesitter.get_parser(0, "c")
+      tree = parser:parse()[1]
+      res = {}
+      for cid, node in cquery:iter_captures(tree:root(), 0, 7, 14) do
+        -- can't transmit node over RPC. just check the name and range
+        table.insert(res, {cquery.captures[cid], node:type(), node:range()})
+      end
+      return res
+    ]],
+      '(expression_statement (assignment_expression (call_expression)))+ @funccall'
+    )
+
+    eq({
+      { 'funccall', 'expression_statement', 11, 4, 11, 34 },
+      { 'funccall', 'expression_statement', 12, 4, 12, 37 },
+      { 'funccall', 'expression_statement', 13, 4, 13, 34 },
+    }, res)
+  end)
+
+  it('support query and iter by match for quantifiers', function()
+    insert(test_text)
+
+    local res = exec_lua(
+      [[
+      cquery = vim.treesitter.query.parse("c", ...)
+      parser = vim.treesitter.get_parser(0, "c")
+      tree = parser:parse()[1]
+      res = {}
+      for pattern, match in cquery:iter_matches(tree:root(), 0, 7, 14) do
+        -- can't transmit node over RPC. just check the name and range
+        local mrepr = {}
+        for cid, nodes in pairs(match) do
+          for _, node in ipairs(nodes) do
+            table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+          end
+        end
+        table.insert(res, {pattern, mrepr})
+      end
+      return res
+    ]],
+      '(expression_statement (assignment_expression (call_expression)))+ @funccall'
+    )
+
+    eq({
+      {
+        1,
+        {
+          { 'funccall', 'expression_statement', 11, 4, 11, 34 },
+          { 'funccall', 'expression_statement', 12, 4, 12, 37 },
+          { 'funccall', 'expression_statement', 13, 4, 13, 34 },
+        },
+      },
     }, res)
   end)
 
@@ -368,8 +432,10 @@ end]]
       for pattern, match in cquery:iter_matches(tree:root(), 0) do
         -- can't transmit node over RPC. just check the name and range
         local mrepr = {}
-        for cid,node in pairs(match) do
-          table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+        for cid, nodes in pairs(match) do
+          for _, node in ipairs(nodes) do
+            table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+          end
         end
         table.insert(res, {pattern, mrepr})
       end
@@ -460,8 +526,10 @@ end]]
       for pattern, match in cquery:iter_matches(tree:root(), 0) do
         -- can't transmit node over RPC. just check the name and range
         local mrepr = {}
-        for cid,node in pairs(match) do
-          table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+        for cid, nodes in pairs(match) do
+          for _, node in ipairs(nodes) do
+            table.insert(mrepr, {cquery.captures[cid], node:type(), node:range()})
+          end
         end
         table.insert(res, {pattern, mrepr})
       end
@@ -486,55 +554,176 @@ end]]
 
     local custom_query = '((identifier) @main (#is-main? @main))'
 
-    local res = exec_lua(
-      [[
-    local query = vim.treesitter.query
+    do
+      local res = exec_lua(
+        [[
+      local query = vim.treesitter.query
 
-    local function is_main(match, pattern, bufnr, predicate)
-      local node = match[ predicate[2] ]
+      local function is_main(match, pattern, bufnr, predicate, any)
+        local nodes = match[ predicate[2] ]
+        if not nodes or #nodes == 0 then
+          return false
+        end
+        for _, node in ipairs(nodes) do
+          local res = query.get_node_text(node, bufnr) == "main"
+          if any and res then
+            return true
+          elseif not any and not res then
+            return false
+          end
+        end
+        return not any
+      end
 
-      return query.get_node_text(node, bufnr)
+      local parser = vim.treesitter.get_parser(0, "c")
+
+      query.add_predicate("is-main?", is_main)
+
+      local query = query.parse("c", ...)
+
+      local nodes = {}
+      for _, node in query:iter_captures(parser:parse()[1]:root(), 0) do
+        table.insert(nodes, {node:range()})
+      end
+
+      return nodes
+      ]],
+        custom_query
+      )
+
+      eq({ { 0, 4, 0, 8 } }, res)
     end
 
-    local parser = vim.treesitter.get_parser(0, "c")
+    do
+      local res = exec_lua [[
+        local query = vim.treesitter.query
 
-    query.add_predicate("is-main?", is_main)
+        local t = {}
+        for _, v in ipairs(query.list_predicates()) do
+          t[v] = true
+        end
 
-    local query = query.parse("c", ...)
+        return t
+      ]]
 
-    local nodes = {}
-    for _, node in query:iter_captures(parser:parse()[1]:root(), 0) do
-      table.insert(nodes, {node:range()})
+      eq(true, res['is-main?'])
     end
+  end)
 
-    return nodes
-    ]],
-      custom_query
-    )
-
-    eq({ { 0, 4, 0, 8 } }, res)
-
-    local res_list = exec_lua [[
-    local query = vim.treesitter.query
-
-    local list = query.list_predicates()
-
-    table.sort(list)
-
-    return list
+  it('supports "all" and "any" semantics for predicates on quantified captures #24738', function()
+    local query_all = [[
+      (((comment (comment_content))+) @bar
+        (#lua-match? @bar "Yes"))
     ]]
 
+    local query_any = [[
+      (((comment (comment_content))+) @bar
+        (#any-lua-match? @bar "Yes"))
+    ]]
+
+    local function test(input, query)
+      api.nvim_buf_set_lines(0, 0, -1, true, vim.split(dedent(input), '\n'))
+      return exec_lua(
+        [[
+        local parser = vim.treesitter.get_parser(0, "lua")
+        local query = vim.treesitter.query.parse("lua", ...)
+        local nodes = {}
+        for _, node in query:iter_captures(parser:parse()[1]:root(), 0) do
+          nodes[#nodes+1] = { node:range() }
+        end
+        return nodes
+      ]],
+        query
+      )
+    end
+
+    eq(
+      {},
+      test(
+        [[
+      -- Yes
+      -- No
+      -- Yes
+    ]],
+        query_all
+      )
+    )
+
+    eq(
+      {
+        { 0, 2, 0, 8 },
+        { 1, 2, 1, 8 },
+        { 2, 2, 2, 8 },
+      },
+      test(
+        [[
+      -- Yes
+      -- Yes
+      -- Yes
+    ]],
+        query_all
+      )
+    )
+
+    eq(
+      {},
+      test(
+        [[
+      -- No
+      -- No
+      -- No
+    ]],
+        query_any
+      )
+    )
+
+    eq(
+      {
+        { 0, 2, 0, 7 },
+        { 1, 2, 1, 8 },
+        { 2, 2, 2, 7 },
+      },
+      test(
+        [[
+      -- No
+      -- Yes
+      -- No
+    ]],
+        query_any
+      )
+    )
+  end)
+
+  it('supports any- prefix to match any capture when using quantifiers #24738', function()
+    insert([[
+      -- Comment
+      -- Comment
+      -- Comment
+    ]])
+
+    local query = [[
+      (((comment (comment_content))+) @bar
+        (#lua-match? @bar "Comment"))
+    ]]
+
+    local result = exec_lua(
+      [[
+      local parser = vim.treesitter.get_parser(0, "lua")
+      local query = vim.treesitter.query.parse("lua", ...)
+      local nodes = {}
+      for _, node in query:iter_captures(parser:parse()[1]:root(), 0) do
+        nodes[#nodes+1] = { node:range() }
+      end
+      return nodes
+    ]],
+      query
+    )
+
     eq({
-      'any-of?',
-      'contains?',
-      'eq?',
-      'has-ancestor?',
-      'has-parent?',
-      'is-main?',
-      'lua-match?',
-      'match?',
-      'vim-match?',
-    }, res_list)
+      { 0, 2, 0, 12 },
+      { 1, 2, 1, 12 },
+      { 2, 2, 2, 12 },
+    }, result)
   end)
 
   it('allows to set simple ranges', function()
