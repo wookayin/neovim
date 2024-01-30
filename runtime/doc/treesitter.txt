@@ -27,6 +27,59 @@ A "treesitter node" represents one specific element of the parsed contents of
 a buffer, which can be captured by a |Query| for, e.g., highlighting. It is
 a |userdata| reference (|TSNode|) to an object held by the treesitter library.
 
+A "query" can be used to extract information about a parsed tree, e.g., for
+syntax highlighting (see |treesitter-highlight|) or to find certain patterns.
+A query consists of one or more "patterns", and each pattern can "match"
+can "capture" specific nodes in the tree that "matches" the pattern. See
+|treesitter-query| for more details and examples.
+
+Example: ~
+
+Source (Lua): >lua
+    function f(foo, bar)
+      return foo
+    end
+<
+Treesitter Syntax Tree (|:InspectTree|): >query
+    ;; tree                       ; token         ; range (0-based index)
+    (chunk                                        ; [0, 0] - [3, 0]
+      (function_declaration                       ; [0, 0] - [2, 3]
+        name: (identifier)        ; f             ; [0, 9] - [0, 10]
+        parameters: (parameters                   ; [0, 10] - [0, 20]
+          name: (identifier)      ; foo           ; [0, 11] - [0, 14]
+          name: (identifier))     ; bar           ; [0, 16] - [0, 19]
+        body: (block                              ; [1, 2] - [1, 12]
+          (return_statement       ; return        ; [1, 2] - [1, 12]
+            (expression_list                      ; [1, 9] - [1, 12]
+              (identifier))))))   ; foo           ; [1, 9] - [1, 12]
+<
+For example, the above syntax tree consists of 9 (named) nodes, written in a
+lisp-like "S-expression". The node that spans over the function declaration
+has a "type" of `function_declaration`. See |TSNode| for how to get useful
+information about of a node.
+
+As a toy example, let's suppose we want to capture and highlight parameters
+in Lua function declaration, and the keywords `"function"`, `"return"`, and
+`"end"`. We can write a simple |treesitter-query| as follows:
+>query
+    (function_declaration
+      name: (identifier) @function
+      (parameters (identifier) @variables.parameter)
+    )
+
+    [ "function" "return" "end" ] @keyword
+<
+There are two "patterns" defined in this query. The first pattern defines two
+"captures": `@function` and `@variables.parameter`, and the second pattern
+defines one capture `@keyword`. Each pattern "matches" a set of nodes in the
+syntax tree; for instance, a "match" found for the first pattern will consist
+of three nodes being captured:
+
+- `@function`: captured the node `(identifier)` with text `"f"`.
+- `@variables.parameter`: captured the two nodes `(identifier)` with text
+  `"foo"` and `"bar" within `(parameters)`, respectively. See also
+  |treesitter-highlight| for more examples.
+
 
 ==============================================================================
 PARSER FILES                                              *treesitter-parsers*
@@ -55,17 +108,29 @@ treesitter parser for buffers with filetype `svg` or `xslt`, use: >lua
 TREESITTER QUERIES                                          *treesitter-query*
 
 Treesitter queries are a way to extract information about a parsed |TSTree|,
-e.g., for the purpose of highlighting. Briefly, a `query` consists of one or
-more patterns. A `pattern` is defined over node types in the syntax tree. A
-`match` corresponds to specific elements of the syntax tree which match a
-pattern. Patterns may optionally define captures and predicates. A `capture`
-allows you to associate names with a specific node in a pattern. A `predicate`
-adds arbitrary metadata and conditional data to a match.
+e.g., for the purpose of highlighting.
 
-Queries are written in a lisp-like language documented in
+Queries are written in a lisp-like language documented in:
 https://tree-sitter.github.io/tree-sitter/using-parsers#query-syntax
+
+A `query` consists of one or more patterns.
+                                                          *treesitter-pattern*
+A `pattern` is a S-expression that matches a certain set of nodes in a syntax
+tree. Patterns may optionally define captures and predicates.
+                                                          *treesitter-capture*
+A `capture` allows you to associate names with a specific node in a pattern.
+Capture names start with `@`, e.g. `@variables.parameter`, `@function`, etc.
+                                                            *treesitter-match*
+A `match` corresponds to specific elements of the syntax tree which match a
+pattern.
+
+A `predicate` adds arbitrary metadata and conditional data to a match.
+predicates and directives are evaluated ONLY once within a single match.
+|treesitter-predicates| |treesitter-directives|
+
 Note: The predicates listed there page differ from those Nvim supports. See
 |treesitter-predicates| for a complete list of predicates supported by Nvim.
+
 
 Nvim looks for queries as `*.scm` files in a `queries` directory under
 `runtimepath`, where each file contains queries for a specific language and
