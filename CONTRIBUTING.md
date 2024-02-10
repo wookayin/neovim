@@ -271,6 +271,8 @@ To validate the documentation files, run:
 make lintdoc
 ```
 
+Note: doxygen >= 1.9.5 is required.
+
 If you need to modify or debug the documentation flow, these are the main files:
 - `./scripts/gen_vimdoc.py`:
   Main doc generator. Drives doxygen to generate xml files, and scrapes those
